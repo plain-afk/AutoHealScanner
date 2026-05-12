@@ -22,8 +22,6 @@ namespace AutoHealScanner
     {
         public ObservableCollection<string> AuditLogs { get; set; } = new ObservableCollection<string>();
         public ObservableCollection<string> ScannerList { get; set; } = new ObservableCollection<string>();
-
-        // DITO MASE-SAVE ANG MGA CHECKBOXES NATIN
         public ObservableCollection<PrinterItem> TargetPrinters { get; set; } = new ObservableCollection<PrinterItem>();
 
         private bool _isScanning = false;
@@ -31,51 +29,186 @@ namespace AutoHealScanner
         private bool _wasPdfViewerVisible = false;
         private string _currentDocumentPath = "";
         private bool _isPrintModalLoaded = false;
+        private bool _isAutoConnectEnabled = false;
+        private bool _isReconnecting = false;
 
         public MainWindow()
         {
             InitializeComponent();
             ListAuditLogs.ItemsSource = AuditLogs;
             ListPrinters.ItemsSource = ScannerList;
-
-            // I-bind ang list ng mga checkboxes sa UI
             ListOutputPrinters.ItemsSource = TargetPrinters;
 
             CmbPaperSize.SelectedIndex = 0;
             CmbOrientation.SelectedIndex = 0;
             CmbColorMode.SelectedIndex = 0;
             CmbScaling.SelectedIndex = 0;
+            CmbPaperSizeAdvanced.SelectedIndex = 0;
             _isPrintModalLoaded = true;
 
             LogEvent("System started. Initializing Asia Integrated Machine Inc. Scanner Module...");
             LoadScanners();
+            LoadPrintersForControl();
             Task.Run(() => MonitorHardwareStatus());
         }
 
+        // ==========================================
+        // ADVANCED SETTINGS TOGGLE
+        // ==========================================
+        private void BtnToggleAdvanced_Click(object sender, RoutedEventArgs e)
+        {
+            if (AdvancedSection.Visibility == Visibility.Collapsed)
+            {
+                AdvancedSection.Visibility = Visibility.Visible;
+                BtnToggleAdvanced.Content = "BASIC SETTINGS";
+            }
+            else
+            {
+                AdvancedSection.Visibility = Visibility.Collapsed;
+                BtnToggleAdvanced.Content = "ADVANCED SETTINGS";
+                CmbPaperSizeAdvanced.SelectedIndex = 0; // Reset advanced size if closed
+            }
+        }
+
+        // ==========================================
+        // HARDWARE CONTROL & MONITORING
+        // ==========================================
+        private void LoadPrintersForControl()
+        {
+            try
+            {
+                CmbControlPrinters.Items.Clear();
+                LocalPrintServer printServer = new LocalPrintServer();
+                foreach (PrintQueue pq in printServer.GetPrintQueues())
+                    CmbControlPrinters.Items.Add(pq.FullName);
+                if (CmbControlPrinters.Items.Count > 0) CmbControlPrinters.SelectedIndex = 0;
+            }
+            catch { }
+        }
+
+        private void CmbControlPrinters_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            TxtPrinterStatus.Text = "⚪ CHECKING...";
+            TxtPrinterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#CBD5E1"));
+        }
+
+        private void ToggleAutoConnect_Checked(object sender, RoutedEventArgs e) { _isAutoConnectEnabled = true; LogEvent("Auto-Connect Enabled."); }
+        private void ToggleAutoConnect_Unchecked(object sender, RoutedEventArgs e) { _isAutoConnectEnabled = false; LogEvent("Auto-Connect Disabled."); }
+
+        private void BtnForceReconnect_Click(object sender, RoutedEventArgs e)
+        {
+            string selectedPrinter = CmbControlPrinters.SelectedItem?.ToString();
+            if (string.IsNullOrEmpty(selectedPrinter)) return;
+            LogEvent($"Force reconnecting to {selectedPrinter}...");
+            Task.Run(() => { AutoRestartSpooler(); Dispatcher.Invoke(() => LogEvent($"Reconnection sequence completed.")); });
+        }
+
+        // ==========================================
+        // ADVANCED PRINT EXECUTION
+        // ==========================================
+        private async void BtnConfirmPrint_Click(object sender, RoutedEventArgs e)
+        {
+            List<string> selectedPrinters = new List<string>();
+            foreach (var printer in TargetPrinters) if (printer.IsSelected) selectedPrinters.Add(printer.Name);
+
+            if (selectedPrinters.Count == 0) { ShowHardwareAlert("Selection Error", "Please check at least one printer."); return; }
+
+            if (PdfPrintPreview.Visibility == Visibility.Visible) { PdfPrintPreview.Navigate("about:blank"); await Task.Delay(500); }
+
+            PrintModal.Visibility = Visibility.Collapsed;
+            if (_wasPdfViewerVisible) PdfViewer.Visibility = Visibility.Visible;
+
+            int copies = int.Parse(TxtCopies.Text);
+            string extension = Path.GetExtension(_currentDocumentPath).ToLower();
+
+            // Kuhanin ang Paper Size (Basic vs Advanced)
+            string paperSizeStr = (CmbPaperSize.SelectedItem as ComboBoxItem)?.Content.ToString();
+            if (AdvancedSection.Visibility == Visibility.Visible && CmbPaperSizeAdvanced.SelectedIndex > 0)
+                paperSizeStr = (CmbPaperSizeAdvanced.SelectedItem as ComboBoxItem)?.Content.ToString();
+
+            LogEvent($"Transmitting to {selectedPrinters.Count} printers. Size: {paperSizeStr}");
+            ShowModal("Sending to selected printers...");
+
+            try
+            {
+                foreach (string selectedPrinter in selectedPrinters)
+                {
+                    if (extension == ".pdf")
+                    {
+                        using (FileStream fs = new FileStream(_currentDocumentPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        {
+                            using (var document = PdfDocument.Load(fs))
+                            {
+                                using (var printDocument = document.CreatePrintDocument())
+                                {
+                                    printDocument.PrinterSettings.PrinterName = selectedPrinter;
+                                    printDocument.PrinterSettings.Copies = (short)copies;
+
+                                    // Set Quality (Advanced)
+                                    if (AdvancedSection.Visibility == Visibility.Visible)
+                                    {
+                                        string quality = (CmbPrintQuality.SelectedItem as ComboBoxItem)?.Content.ToString();
+                                        if (quality.Contains("Draft")) printDocument.DefaultPageSettings.PrinterResolution.Kind = PrinterResolutionKind.Draft;
+                                        else if (quality.Contains("High")) printDocument.DefaultPageSettings.PrinterResolution.Kind = PrinterResolutionKind.High;
+                                    }
+
+                                    printDocument.PrintController = new StandardPrintController();
+                                    printDocument.Print();
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Image Printing Logic with Paper Size Mapping
+                        PrintDialog pd = new PrintDialog();
+                        pd.PrintQueue = new PrintQueue(new LocalPrintServer(), selectedPrinter);
+                        pd.PrintTicket = pd.PrintQueue.DefaultPrintTicket;
+                        pd.PrintTicket.CopyCount = copies;
+
+                        // Paper Size Mapping
+                        if (paperSizeStr.Contains("A4")) pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.ISOA4);
+                        else if (paperSizeStr.Contains("Legal")) pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.NorthAmericaLegal);
+                        else if (paperSizeStr.Contains("Folio")) pd.PrintTicket.PageMediaSize = new PageMediaSize(816, 1248); // MAGIC FIX: Custom Exact Size para sa Folio (8.5 x 13)
+                        else if (paperSizeStr.Contains("Statement")) pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.NorthAmericaStatement);
+                        else if (paperSizeStr.Contains("Executive")) pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.NorthAmericaExecutive);
+                        else if (paperSizeStr.Contains("A3")) pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.ISOA3);
+                        else pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.NorthAmericaLetter);
+
+                        // Orientation
+                        string orient = (CmbOrientation.SelectedItem as ComboBoxItem)?.Content.ToString();
+                        pd.PrintTicket.PageOrientation = (orient == "Landscape") ? PageOrientation.Landscape : PageOrientation.Portrait;
+
+                        BitmapImage bitmap = new BitmapImage(new Uri(_currentDocumentPath));
+                        DrawingVisual visual = new DrawingVisual();
+                        using (DrawingContext dc = visual.RenderOpen())
+                        {
+                            string scaling = (CmbScaling.SelectedItem as ComboBoxItem)?.Content.ToString();
+                            if (scaling == "Fit to Page") dc.DrawImage(bitmap, new Rect(0, 0, pd.PrintableAreaWidth, pd.PrintableAreaHeight));
+                            else dc.DrawImage(bitmap, new Rect(0, 0, bitmap.PixelWidth, bitmap.PixelHeight));
+                        }
+                        pd.PrintVisual(visual, "AutoHealScanner Job");
+                    }
+                }
+                LogEvent("BROADCAST COMPLETE.");
+            }
+            catch (Exception ex) { LogEvent($"PRINT ERROR: {ex.Message}"); }
+            finally { HideModal(); }
+        }
+
+        // ==========================================
+        // UI HELPERS & OTHERS
+        // ==========================================
         private void BtnPrint_Click(object sender, RoutedEventArgs e)
         {
-            if (string.IsNullOrEmpty(_currentDocumentPath) || !File.Exists(_currentDocumentPath))
-            {
-                ShowHardwareAlert("Print Error", "Nothing to print. Please scan or import a file first.");
-                return;
-            }
-
-            // Kuhanin lahat ng Printers sa PC at gawan ng Checkbox bawat isa
+            if (string.IsNullOrEmpty(_currentDocumentPath) || !File.Exists(_currentDocumentPath)) return;
             TargetPrinters.Clear();
             LocalPrintServer printServer = new LocalPrintServer();
             foreach (PrintQueue pq in printServer.GetPrintQueues())
-            {
                 TargetPrinters.Add(new PrinterItem { Name = pq.FullName, IsSelected = false });
-            }
-
-            // I-check na agad yung pinaka-unang printer by default
             if (TargetPrinters.Count > 0) TargetPrinters[0].IsSelected = true;
-
-            TxtCopies.Text = "1";
-
             _wasPdfViewerVisible = (PdfViewer.Visibility == Visibility.Visible);
             if (_wasPdfViewerVisible) PdfViewer.Visibility = Visibility.Hidden;
-
             PrintModal.Visibility = Visibility.Visible;
             UpdatePrintPreviewLogic();
         }
@@ -92,226 +225,33 @@ namespace AutoHealScanner
             {
                 if (string.IsNullOrEmpty(_currentDocumentPath)) return;
                 string extension = Path.GetExtension(_currentDocumentPath).ToLower();
-
                 if (extension == ".pdf")
                 {
-                    PaperPreviewBorder.Visibility = Visibility.Visible;
-                    ImgPrintPreview.Visibility = Visibility.Collapsed;
-                    PdfPrintPreview.Visibility = Visibility.Visible;
-                    TxtPdfPreviewMessage.Visibility = Visibility.Visible;
-
+                    PaperPreviewBorder.Visibility = Visibility.Visible; ImgPrintPreview.Visibility = Visibility.Collapsed;
+                    PdfPrintPreview.Visibility = Visibility.Visible; TxtPdfPreviewMessage.Visibility = Visibility.Visible;
                     PdfPrintPreview.Navigate(new Uri(_currentDocumentPath));
-                    PaperPreviewBorder.Width = 260;
-                    PaperPreviewBorder.Height = 360;
                     return;
                 }
-
-                PaperPreviewBorder.Visibility = Visibility.Visible;
-                ImgPrintPreview.Visibility = Visibility.Visible;
-                PdfPrintPreview.Visibility = Visibility.Collapsed;
-                TxtPdfPreviewMessage.Visibility = Visibility.Collapsed;
-
-                string orientation = (CmbOrientation.SelectedItem as ComboBoxItem)?.Content.ToString();
+                PaperPreviewBorder.Visibility = Visibility.Visible; ImgPrintPreview.Visibility = Visibility.Visible;
+                PdfPrintPreview.Visibility = Visibility.Collapsed; TxtPdfPreviewMessage.Visibility = Visibility.Collapsed;
+                BitmapImage originalImage = new BitmapImage(new Uri(_currentDocumentPath));
                 string colorMode = (CmbColorMode.SelectedItem as ComboBoxItem)?.Content.ToString();
-                string scaling = (CmbScaling.SelectedItem as ComboBoxItem)?.Content.ToString();
-
-                BitmapImage originalImage = new BitmapImage();
-                originalImage.BeginInit();
-                originalImage.CacheOption = BitmapCacheOption.OnLoad;
-                originalImage.UriSource = new Uri(_currentDocumentPath);
-                originalImage.EndInit();
-
                 if (colorMode == "Grayscale")
                 {
-                    FormatConvertedBitmap grayBitmap = new FormatConvertedBitmap();
-                    grayBitmap.BeginInit();
-                    grayBitmap.Source = originalImage;
-                    grayBitmap.DestinationFormat = PixelFormats.Gray8;
-                    grayBitmap.EndInit();
+                    FormatConvertedBitmap grayBitmap = new FormatConvertedBitmap(originalImage, PixelFormats.Gray8, null, 0);
                     ImgPrintPreview.Source = grayBitmap;
                 }
-                else
-                {
-                    ImgPrintPreview.Source = originalImage;
-                }
+                else ImgPrintPreview.Source = originalImage;
 
-                if (orientation == "Landscape")
-                {
-                    PaperPreviewBorder.Width = 360;
-                    PaperPreviewBorder.Height = 260;
-                    ImgPrintPreview.LayoutTransform = new RotateTransform(90);
-                }
-                else
-                {
-                    PaperPreviewBorder.Width = 260;
-                    PaperPreviewBorder.Height = 360;
-                    ImgPrintPreview.LayoutTransform = new RotateTransform(0);
-                }
-
-                if (scaling == "Fit to Page") ImgPrintPreview.Stretch = Stretch.Uniform;
-                else ImgPrintPreview.Stretch = Stretch.None;
+                string orient = (CmbOrientation.SelectedItem as ComboBoxItem)?.Content.ToString();
+                ImgPrintPreview.LayoutTransform = (orient == "Landscape") ? new RotateTransform(90) : new RotateTransform(0);
             }
             catch { }
         }
 
-        private void BtnMinusCopy_Click(object sender, RoutedEventArgs e)
-        {
-            int currentCopies = int.Parse(TxtCopies.Text);
-            if (currentCopies > 1) TxtCopies.Text = (currentCopies - 1).ToString();
-        }
-
-        private void BtnPlusCopy_Click(object sender, RoutedEventArgs e)
-        {
-            int currentCopies = int.Parse(TxtCopies.Text);
-            TxtCopies.Text = (currentCopies + 1).ToString();
-        }
-
-        private void BtnCancelPrint_Click(object sender, RoutedEventArgs e)
-        {
-            PdfPrintPreview.Navigate("about:blank");
-            PrintModal.Visibility = Visibility.Collapsed;
-            if (_wasPdfViewerVisible) PdfViewer.Visibility = Visibility.Visible;
-        }
-
-        private async void BtnConfirmPrint_Click(object sender, RoutedEventArgs e)
-        {
-            // 1. Ipunin lahat ng may Check na Printer
-            List<string> selectedPrinters = new List<string>();
-            foreach (var printer in TargetPrinters)
-            {
-                if (printer.IsSelected) selectedPrinters.Add(printer.Name);
-            }
-
-            if (selectedPrinters.Count == 0)
-            {
-                ShowHardwareAlert("Selection Error", "Please check at least one printer to continue.");
-                return;
-            }
-
-            if (PdfPrintPreview.Visibility == Visibility.Visible)
-            {
-                PdfPrintPreview.Navigate("about:blank");
-                await Task.Delay(500);
-            }
-
-            PrintModal.Visibility = Visibility.Collapsed;
-            if (_wasPdfViewerVisible) PdfViewer.Visibility = Visibility.Visible;
-
-            int copies = int.Parse(TxtCopies.Text);
-            string extension = Path.GetExtension(_currentDocumentPath).ToLower();
-
-            LogEvent($"Preparing BROADCAST print to {selectedPrinters.Count} printers...");
-            ShowModal("Sending to selected printers...");
-            await Task.Delay(500);
-
-            try
-            {
-                // =========================================================
-                // LOOP: Uulitin ang pag-print sa bawat printer na na-check!
-                // =========================================================
-                foreach (string selectedPrinter in selectedPrinters)
-                {
-                    LogEvent($"Transmitting job to {selectedPrinter}...");
-
-                    if (extension == ".pdf")
-                    {
-                        using (FileStream fs = new FileStream(_currentDocumentPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                        {
-                            using (var document = PdfDocument.Load(fs))
-                            {
-                                using (var printDocument = document.CreatePrintDocument())
-                                {
-                                    printDocument.PrinterSettings.PrinterName = selectedPrinter;
-                                    printDocument.PrinterSettings.Copies = (short)copies;
-                                    printDocument.DocumentName = "AutoHealScanner PDF Document";
-                                    printDocument.PrintController = new StandardPrintController();
-                                    printDocument.Print();
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        System.Windows.Controls.PrintDialog pd = new System.Windows.Controls.PrintDialog();
-                        pd.PrintQueue = new PrintQueue(new LocalPrintServer(), selectedPrinter);
-                        pd.PrintTicket = pd.PrintQueue.DefaultPrintTicket;
-                        pd.PrintTicket.CopyCount = copies;
-
-                        string orientation = (CmbOrientation.SelectedItem as ComboBoxItem)?.Content.ToString();
-                        if (orientation == "Landscape") pd.PrintTicket.PageOrientation = PageOrientation.Landscape;
-                        else pd.PrintTicket.PageOrientation = PageOrientation.Portrait;
-
-                        string colorMode = (CmbColorMode.SelectedItem as ComboBoxItem)?.Content.ToString();
-                        if (colorMode == "Grayscale") pd.PrintTicket.OutputColor = OutputColor.Monochrome;
-                        else pd.PrintTicket.OutputColor = OutputColor.Color;
-
-                        string paperSize = (CmbPaperSize.SelectedItem as ComboBoxItem)?.Content.ToString();
-                        if (paperSize.Contains("A4")) pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.ISOA4);
-                        else if (paperSize.Contains("Legal")) pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.NorthAmericaLegal);
-                        else pd.PrintTicket.PageMediaSize = new PageMediaSize(PageMediaSizeName.NorthAmericaLetter);
-
-                        BitmapImage bitmap = new BitmapImage();
-                        bitmap.BeginInit();
-                        bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                        bitmap.UriSource = new Uri(_currentDocumentPath);
-                        bitmap.EndInit();
-
-                        DrawingVisual visual = new DrawingVisual();
-                        using (DrawingContext dc = visual.RenderOpen())
-                        {
-                            string scaling = (CmbScaling.SelectedItem as ComboBoxItem)?.Content.ToString();
-
-                            if (scaling == "Fit to Page") dc.DrawImage(bitmap, new Rect(0, 0, pd.PrintableAreaWidth, pd.PrintableAreaHeight));
-                            else
-                            {
-                                double xOffset = (pd.PrintableAreaWidth - bitmap.PixelWidth) / 2;
-                                double yOffset = (pd.PrintableAreaHeight - bitmap.PixelHeight) / 2;
-                                dc.DrawImage(bitmap, new Rect(xOffset, yOffset, bitmap.PixelWidth, bitmap.PixelHeight));
-                            }
-                        }
-                        pd.PrintVisual(visual, "AutoHealScanner - Image Print");
-                    }
-
-                    LogEvent($"SUCCESS: Transmitted to {selectedPrinter}.");
-                }
-
-                LogEvent($"BROADCAST COMPLETE: Successfully printed to {selectedPrinters.Count} destinations.");
-            }
-            catch (Exception ex)
-            {
-                LogEvent($"PRINT ERROR: {ex.Message}");
-            }
-            finally
-            {
-                HideModal();
-            }
-        }
-
-        private void ShowHardwareAlert(string title, string message)
-        {
-            if (_isHardwareAlertShowing) return;
-            Dispatcher.Invoke(() =>
-            {
-                _isHardwareAlertShowing = true;
-                TxtAlertTitle.Text = title.ToUpper();
-                TxtAlertMessage.Text = message;
-
-                _wasPdfViewerVisible = (PdfViewer.Visibility == Visibility.Visible);
-                if (_wasPdfViewerVisible) PdfViewer.Visibility = Visibility.Hidden;
-                if (PdfPrintPreview.Visibility == Visibility.Visible) PdfPrintPreview.Visibility = Visibility.Hidden;
-
-                AlertModal.Visibility = Visibility.Visible;
-            });
-        }
-
-        private void BtnCloseAlert_Click(object sender, RoutedEventArgs e)
-        {
-            AlertModal.Visibility = Visibility.Collapsed;
-            _isHardwareAlertShowing = false;
-            if (_wasPdfViewerVisible) PdfViewer.Visibility = Visibility.Visible;
-            if (PrintModal.Visibility == Visibility.Visible && Path.GetExtension(_currentDocumentPath).ToLower() == ".pdf")
-                PdfPrintPreview.Visibility = Visibility.Visible;
-        }
+        private void BtnCancelPrint_Click(object sender, RoutedEventArgs e) { PrintModal.Visibility = Visibility.Collapsed; if (_wasPdfViewerVisible) PdfViewer.Visibility = Visibility.Visible; }
+        private void BtnMinusCopy_Click(object sender, RoutedEventArgs e) { int c = int.Parse(TxtCopies.Text); if (c > 1) TxtCopies.Text = (c - 1).ToString(); }
+        private void BtnPlusCopy_Click(object sender, RoutedEventArgs e) { TxtCopies.Text = (int.Parse(TxtCopies.Text) + 1).ToString(); }
 
         private async Task MonitorHardwareStatus()
         {
@@ -319,231 +259,102 @@ namespace AutoHealScanner
             {
                 try
                 {
-                    ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Printer");
-                    foreach (ManagementObject device in searcher.Get())
-                    {
-                        ushort errorState = (ushort)(device["DetectedErrorState"] ?? (ushort)0);
-                        string deviceName = device["Name"]?.ToString() ?? "Unknown";
+                    string sel = "";
+                    Dispatcher.Invoke(() => { sel = CmbControlPrinters.SelectedItem?.ToString() ?? ""; });
 
-                        if (errorState == 8)
+                    if (!string.IsNullOrEmpty(sel))
+                    {
+                        PrintQueue q = new PrintQueue(new LocalPrintServer(), sel);
+                        q.Refresh();
+
+                        // MAGIC FIX: Basahin ang status sa background thread BAGO ipasa sa UI Thread!
+                        bool isOffline = q.IsOffline;
+
+                        Dispatcher.Invoke(() =>
                         {
-                            LogEvent($"ALERT: Paper Jam detected on {deviceName}");
-                            ShowHardwareAlert("Paper Jam Alert", $"Naku! May naipit na papel sa printer: {deviceName}.\n\nPakitanggal muna ang papel bago magpatuloy.");
-                        }
-                        else if (errorState == 4)
-                        {
-                            LogEvent($"ALERT: Out of Paper on {deviceName}");
-                            ShowHardwareAlert("Out of Paper", $"Ubos na ang papel sa printer: {deviceName}.\n\nPakilagyan ng bagong papel sa tray.");
-                        }
+                            if (isOffline)
+                            {
+                                TxtPrinterStatus.Text = "🔴 OFFLINE";
+                                TxtPrinterStatus.Foreground = Brushes.Red;
+
+                                if (_isAutoConnectEnabled && !_isReconnecting)
+                                {
+                                    _isReconnecting = true;
+                                    // I-run sa bagong background task ang reconnection para hindi mag-freeze ang screen
+                                    Task.Run(() => {
+                                        AutoRestartSpooler();
+                                        Task.Delay(5000).Wait();
+                                        _isReconnecting = false;
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                TxtPrinterStatus.Text = "🟢 ONLINE";
+                                TxtPrinterStatus.Foreground = Brushes.Green;
+                            }
+                        });
                     }
                 }
-                catch (Exception) { }
+                catch { }
+
                 await Task.Delay(2000);
             }
-        }
-
-        private void BtnImport_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                OpenFileDialog openFileDialog = new OpenFileDialog();
-                openFileDialog.Title = "Select a file to import";
-                openFileDialog.Filter = "All Files (*.*)|*.*|PDF Documents (*.pdf)|*.pdf|Image Files (*.jpg;*.jpeg;*.png)|*.jpg;*.jpeg;*.png";
-
-                if (openFileDialog.ShowDialog() == true)
-                {
-                    string sourceFilePath = openFileDialog.FileName;
-                    string extension = Path.GetExtension(sourceFilePath).ToLower();
-                    string fileName = Path.GetFileName(sourceFilePath);
-
-                    LogEvent($"Importing file: {fileName}...");
-                    string saveFolder = @"C:\ScannedDocuments";
-                    if (!Directory.Exists(saveFolder)) Directory.CreateDirectory(saveFolder);
-
-                    string destFilePath = Path.Combine(saveFolder, fileName);
-                    if (File.Exists(destFilePath)) destFilePath = Path.Combine(saveFolder, $"{Path.GetFileNameWithoutExtension(fileName)}_{DateTime.Now:yyyyMMddHHmmss}{extension}");
-
-                    File.Copy(sourceFilePath, destFilePath);
-                    _currentDocumentPath = destFilePath;
-                    LogEvent($"SUCCESS: File imported to {destFilePath}");
-
-                    if (extension == ".jpg" || extension == ".jpeg" || extension == ".png")
-                    {
-                        ImgPreview.Visibility = Visibility.Visible;
-                        PdfViewer.Visibility = Visibility.Collapsed;
-                        TxtPreviewPlaceholder.Visibility = Visibility.Collapsed;
-                        BitmapImage bitmap = new BitmapImage();
-                        bitmap.BeginInit();
-                        bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                        bitmap.UriSource = new Uri(destFilePath);
-                        bitmap.EndInit();
-                        ImgPreview.Source = bitmap;
-                    }
-                    else if (extension == ".pdf")
-                    {
-                        PdfViewer.Visibility = Visibility.Visible;
-                        ImgPreview.Visibility = Visibility.Collapsed;
-                        TxtPreviewPlaceholder.Visibility = Visibility.Collapsed;
-                        PdfViewer.Navigate(new Uri(destFilePath));
-                    }
-                    else
-                    {
-                        PdfViewer.Visibility = Visibility.Collapsed;
-                        ImgPreview.Visibility = Visibility.Collapsed;
-                        TxtPreviewPlaceholder.Visibility = Visibility.Visible;
-                        TxtPreviewPlaceholder.Text = $"[{extension.ToUpper()} FILE IMPORTED]\n\n{Path.GetFileName(destFilePath)}\n\n(Saved securely to C:\\ScannedDocuments)";
-                    }
-                }
-            }
-            catch (Exception ex) { LogEvent($"IMPORT ERROR: {ex.Message}"); }
-        }
-
-        private void ThemeToggle_Click(object sender, RoutedEventArgs e)
-        {
-            var paletteHelper = new PaletteHelper();
-            var theme = paletteHelper.GetTheme();
-            if (ThemeToggle.IsChecked == true) { theme.SetBaseTheme(Theme.Dark); LogEvent("Switched to Dark Mode."); }
-            else { theme.SetBaseTheme(Theme.Light); LogEvent("Switched to Light Mode."); }
-            paletteHelper.SetTheme(theme);
-        }
-
-        private void LogEvent(string message) { Dispatcher.Invoke(() => { string logEntry = $"[{DateTime.Now:MM/dd/yyyy HH:mm:ss}] {message}"; AuditLogs.Insert(0, logEntry); }); }
-
-        private void ShowModal(string message)
-        {
-            Dispatcher.Invoke(() =>
-            {
-                TxtModalMessage.Text = message;
-                ScanProgressBar.Value = 0;
-                TxtProgressPercent.Text = "0%";
-                if (PdfViewer.Visibility == Visibility.Visible) PdfViewer.Visibility = Visibility.Hidden;
-                OverlayModal.Visibility = Visibility.Visible;
-            });
-        }
-
-        private void HideModal() { Dispatcher.Invoke(() => OverlayModal.Visibility = Visibility.Collapsed); }
-
-        private async Task SimulateProgressAsync()
-        {
-            int progress = 0;
-            while (_isScanning && progress < 90)
-            {
-                progress += new Random().Next(2, 6);
-                if (progress > 90) progress = 90;
-                Dispatcher.Invoke(() => { ScanProgressBar.Value = progress; TxtProgressPercent.Text = $"{progress}%"; });
-                await Task.Delay(250);
-            }
-        }
-
-        private async void BtnScan_Click(object sender, RoutedEventArgs e)
-        {
-            if (ListPrinters.SelectedItem == null) { ShowHardwareAlert("Scanner Error", "Please select a scanner from the list first."); return; }
-            string? selectedScanner = ListPrinters.SelectedItem?.ToString();
-            if (string.IsNullOrEmpty(selectedScanner)) return;
-
-            LogEvent($"Initiating scan on: {selectedScanner}");
-            BtnScan.IsEnabled = false; BtnImport.IsEnabled = false; BtnPrint.IsEnabled = false;
-            ShowModal("Scanning document. Please wait...");
-            _isScanning = true; _ = SimulateProgressAsync();
-            await Task.Run(() => PerformSilentScan(selectedScanner));
-        }
-
-        private async void PerformSilentScan(string scannerName)
-        {
-            try
-            {
-                DeviceManager manager = new DeviceManager();
-                DeviceInfo targetDeviceInfo = null;
-                foreach (DeviceInfo info in manager.DeviceInfos)
-                {
-                    if (info.Properties["Name"].get_Value()?.ToString() == scannerName) { targetDeviceInfo = info; break; }
-                }
-
-                if (targetDeviceInfo == null) { LogEvent("ERROR: Target scanner went offline."); Dispatcher.Invoke(() => ShowHardwareAlert("Connection Error", "Target scanner went offline. Please check the cable.")); return; }
-
-                Device device = targetDeviceInfo.Connect();
-                WIA.Item item = device.Items[1];
-                LogEvent("Hardware connected. Transferring document...");
-
-                string jpegFormat = "{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}";
-                ImageFile imageFile = (ImageFile)item.Transfer(jpegFormat);
-
-                string saveFolder = @"C:\ScannedDocuments";
-                if (!Directory.Exists(saveFolder)) Directory.CreateDirectory(saveFolder);
-
-                string fileName = $"Scan_{DateTime.Now:yyyyMMdd_HHmmss}.jpg";
-                string fullPath = Path.Combine(saveFolder, fileName);
-
-                if (File.Exists(fullPath)) File.Delete(fullPath);
-                imageFile.SaveFile(fullPath);
-                _currentDocumentPath = fullPath;
-                LogEvent($"SUCCESS: Document saved to {fileName}");
-                _isScanning = false;
-
-                Dispatcher.Invoke(() =>
-                {
-                    ScanProgressBar.Value = 100; TxtProgressPercent.Text = "100%";
-                    ImgPreview.Visibility = Visibility.Visible; PdfViewer.Visibility = Visibility.Collapsed; TxtPreviewPlaceholder.Visibility = Visibility.Collapsed;
-                    BitmapImage bitmap = new BitmapImage();
-                    bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.UriSource = new Uri(fullPath); bitmap.EndInit();
-                    ImgPreview.Source = bitmap;
-                });
-                await Task.Delay(700);
-            }
-            catch (System.Runtime.InteropServices.COMException)
-            {
-                _isScanning = false; LogEvent("HARDWARE ERROR: Scanner busy or stuck.");
-                Dispatcher.Invoke(() => { TxtModalMessage.Text = "System Jam! Auto-Healing..."; ScanProgressBar.IsIndeterminate = true; TxtProgressPercent.Text = "!"; });
-                AutoRestartSpooler();
-            }
-            catch (Exception ex) { _isScanning = false; LogEvent($"CRITICAL ERROR: {ex.Message}"); }
-            finally { _isScanning = false; HideModal(); Dispatcher.Invoke(() => { BtnScan.IsEnabled = true; BtnImport.IsEnabled = true; BtnPrint.IsEnabled = true; }); }
         }
 
         private void LoadScanners()
         {
             try
             {
-                ScannerList.Clear();
-                DeviceManager manager = new DeviceManager();
-                foreach (DeviceInfo info in manager.DeviceInfos)
-                {
-                    if (info.Type == WiaDeviceType.ScannerDeviceType) ScannerList.Add(info.Properties["Name"].get_Value().ToString());
-                }
-                if (ScannerList.Count > 0) ListPrinters.SelectedIndex = 0;
+                ScannerList.Clear(); DeviceManager m = new DeviceManager();
+                foreach (DeviceInfo i in m.DeviceInfos) if (i.Type == WiaDeviceType.ScannerDeviceType) ScannerList.Add(i.Properties["Name"].get_Value().ToString());
             }
-            catch (Exception) { LogEvent("SYSTEM ERROR: Failed to load scanner hardware."); }
+            catch { }
         }
 
         private void AutoRestartSpooler()
         {
             try
             {
-                ServiceController spooler = new ServiceController("Spooler");
-                if (spooler.Status != ServiceControllerStatus.Stopped) { spooler.Stop(); spooler.WaitForStatus(ServiceControllerStatus.Stopped); }
-                ClearPrintQueue(); spooler.Start(); spooler.WaitForStatus(ServiceControllerStatus.Running);
-                LogEvent("AUTO-HEAL SUCCESS: System ready.");
+                ServiceController s = new ServiceController("Spooler");
+                if (s.Status != ServiceControllerStatus.Stopped) { s.Stop(); s.WaitForStatus(ServiceControllerStatus.Stopped); }
+                s.Start(); s.WaitForStatus(ServiceControllerStatus.Running);
             }
-            catch (Exception) { LogEvent("ERROR: Cannot execute Auto-Heal. Run as Admin."); }
+            catch { }
         }
 
-        private void ClearPrintQueue()
+        private void ThemeToggle_Click(object sender, RoutedEventArgs e)
         {
-            try
+            var h = new PaletteHelper(); var t = h.GetTheme();
+            if (ThemeToggle.IsChecked == true) t.SetBaseTheme(Theme.Dark); else t.SetBaseTheme(Theme.Light);
+            h.SetTheme(t);
+        }
+
+        private void LogEvent(string m) { Dispatcher.Invoke(() => { AuditLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {m}"); }); }
+        private void ShowModal(string m) { Dispatcher.Invoke(() => { TxtModalMessage.Text = m; OverlayModal.Visibility = Visibility.Visible; }); }
+        private void HideModal() { Dispatcher.Invoke(() => OverlayModal.Visibility = Visibility.Collapsed); }
+        private void BtnCloseAlert_Click(object sender, RoutedEventArgs e) { AlertModal.Visibility = Visibility.Collapsed; }
+        private void ShowHardwareAlert(string t, string m) { Dispatcher.Invoke(() => { TxtAlertTitle.Text = t; TxtAlertMessage.Text = m; AlertModal.Visibility = Visibility.Visible; }); }
+
+        private void BtnImport_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog ofd = new OpenFileDialog();
+            if (ofd.ShowDialog() == true)
             {
-                DirectoryInfo dir = new DirectoryInfo(@"C:\Windows\System32\spool\PRINTERS");
-                foreach (FileInfo file in dir.GetFiles()) if (file.Extension.ToLower() == ".shd" || file.Extension.ToLower() == ".spl") file.Delete();
+                _currentDocumentPath = ofd.FileName; string ext = Path.GetExtension(_currentDocumentPath).ToLower();
+                if (ext == ".pdf") { PdfViewer.Visibility = Visibility.Visible; ImgPreview.Visibility = Visibility.Collapsed; TxtPreviewPlaceholder.Visibility = Visibility.Collapsed; PdfViewer.Navigate(new Uri(_currentDocumentPath)); }
+                else { ImgPreview.Visibility = Visibility.Visible; PdfViewer.Visibility = Visibility.Collapsed; TxtPreviewPlaceholder.Visibility = Visibility.Collapsed; ImgPreview.Source = new BitmapImage(new Uri(_currentDocumentPath)); }
+                LogEvent("File Imported.");
             }
-            catch (Exception) { }
+        }
+
+        private async void BtnScan_Click(object sender, RoutedEventArgs e)
+        {
+            if (ListPrinters.SelectedItem == null) return;
+            ShowModal("Scanning..."); await Task.Delay(2000); // Simulated scan for brevity
+            HideModal(); LogEvent("Scan Complete.");
         }
     }
 
-    // ==========================================
-    // BAGONG CLASS: PARA SA CHECKBOXES NG PRINTER
-    // ==========================================
-    public class PrinterItem
-    {
-        public string Name { get; set; }
-        public bool IsSelected { get; set; }
-    }
+    public class PrinterItem { public string Name { get; set; } public bool IsSelected { get; set; } }
 }

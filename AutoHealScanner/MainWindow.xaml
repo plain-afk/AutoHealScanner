@@ -24,6 +24,7 @@
                     <TextBlock Text="|" FontSize="20" Foreground="#64748B" Margin="15,0" VerticalAlignment="Center"/>
                     <TextBlock Text="James Michael G. Biaton" TextWrapping="NoWrap" FontSize="16" FontWeight="Bold" Foreground="#F59E0B" VerticalAlignment="Center"/>
                     <TextBlock Text="|" FontSize="20" Foreground="#64748B" Margin="15,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="Asia Integrated Machine Inc." TextWrapping="NoWrap" FontSize="16" FontWeight="Bold" Foreground="#F59E0B" VerticalAlignment="Center"/>
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -41,7 +42,8 @@
 
             <Grid Grid.Column="0" Background="#0F172A">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="1.2*"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
@@ -51,7 +53,6 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Text="AVAILABLE SCANNERS" FontWeight="Heavy" FontSize="13" Foreground="#14B8A6" Margin="0,0,0,10"/>
-
                     <Border Grid.Row="1" Background="#1E293B" CornerRadius="8" Padding="10">
                         <ListBox x:Name="ListPrinters" ScrollViewer.HorizontalScrollBarVisibility="Disabled" Foreground="White">
                             <ListBox.ItemTemplate>
@@ -63,13 +64,34 @@
                     </Border>
                 </Grid>
 
-                <Grid Grid.Row="1" Margin="20,0,20,20">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Text="SYSTEM AUDIT LOGS" FontWeight="Heavy" FontSize="13" Foreground="#14B8A6" Margin="0,0,0,10"/>
+                <Grid Grid.Row="1" Margin="20,0,20,10">
+                    <TextBlock Grid.Row="0" Text="HARDWARE CONNECTION MONITOR" FontWeight="Heavy" FontSize="13" Foreground="#F59E0B" Margin="0,0,0,10"/>
+                    <Border Grid.Row="1" Background="#1E293B" CornerRadius="8" Padding="15">
+                        <StackPanel>
+                            <TextBlock Text="Select Printer to Monitor:" FontSize="11" Foreground="#64748B" Margin="0,0,0,5"/>
+                            <ComboBox x:Name="CmbControlPrinters" Foreground="{DynamicResource MaterialDesignBody}" Margin="0,0,0,10" FontSize="13" SelectionChanged="CmbControlPrinters_SelectionChanged"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
+                                <TextBlock Text="Live Status:" FontSize="12" FontWeight="Bold" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                <TextBlock x:Name="TxtPrinterStatus" Text="⚪ CHECKING..." FontSize="12" FontWeight="Black" Foreground="#CBD5E1" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="BtnForceReconnect" Grid.Column="0" Content="RECONNECT" Background="#0D9488" BorderBrush="#0D9488" Foreground="White" Click="BtnForceReconnect_Click" Padding="0" FontSize="11" FontWeight="Bold"/>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                    <TextBlock Text="Auto-Connect" FontSize="11" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <ToggleButton x:Name="ToggleAutoConnect" Checked="ToggleAutoConnect_Checked" Unchecked="ToggleAutoConnect_Unchecked"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                </Grid>
 
+                <Grid Grid.Row="2" Margin="20,0,20,20">
+                    <TextBlock Grid.Row="0" Text="SYSTEM AUDIT LOGS" FontWeight="Heavy" FontSize="13" Foreground="#14B8A6" Margin="0,0,0,10"/>
                     <Border Grid.Row="1" Background="#1E293B" CornerRadius="8" Padding="10">
                         <ListBox x:Name="ListAuditLogs" ScrollViewer.HorizontalScrollBarVisibility="Disabled" Foreground="#CBD5E1">
                             <ListBox.ItemTemplate>
@@ -87,7 +109,6 @@
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
-
                 <materialDesign:Card Grid.Row="0" Margin="0,0,0,25" UniformCornerRadius="12" Background="{DynamicResource MaterialDesignCardBackground}">
                     <Grid>
                         <TextBlock x:Name="TxtPreviewPlaceholder" Text="No document scanned or imported yet." HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" Opacity="0.4" FontStyle="Italic" FontSize="16"/>
@@ -104,27 +125,18 @@
                         <ColumnDefinition Width="15"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-
-                    <Button x:Name="BtnImport" Grid.Column="0" Content="IMPORT" Height="65" FontSize="18" FontWeight="Black" 
-                            Click="BtnImport_Click" Cursor="Hand" materialDesign:ButtonAssist.CornerRadius="10" 
-                            Background="#475569" BorderBrush="#475569" Foreground="White"/>
-
-                    <Button x:Name="BtnPrint" Grid.Column="2" Content="PRINT" Height="65" FontSize="18" FontWeight="Black" 
-                            Click="BtnPrint_Click" Cursor="Hand" materialDesign:ButtonAssist.CornerRadius="10" 
-                            Background="#F59E0B" BorderBrush="#F59E0B" Foreground="White"/>
-
-                    <Button x:Name="BtnScan" Grid.Column="4" Content="SCAN" Height="65" FontSize="18" FontWeight="Black" 
-                            Click="BtnScan_Click" Cursor="Hand" materialDesign:ButtonAssist.CornerRadius="10" 
-                            Background="#0D9488" BorderBrush="#0D9488" Foreground="White"/>
+                    <Button x:Name="BtnImport" Grid.Column="0" Content="IMPORT" Height="65" FontSize="18" FontWeight="Black" Click="BtnImport_Click" Background="#475569" BorderBrush="#475569" Foreground="White"/>
+                    <Button x:Name="BtnPrint" Grid.Column="2" Content="PRINT" Height="65" FontSize="18" FontWeight="Black" Click="BtnPrint_Click" Background="#F59E0B" BorderBrush="#F59E0B" Foreground="White"/>
+                    <Button x:Name="BtnScan" Grid.Column="4" Content="SCAN" Height="65" FontSize="18" FontWeight="Black" Click="BtnScan_Click" Background="#0D9488" BorderBrush="#0D9488" Foreground="White"/>
                 </Grid>
             </Grid>
         </Grid>
 
         <Grid x:Name="PrintModal" Visibility="Collapsed" Grid.RowSpan="2" Background="#E60F172A" Panel.ZIndex="10">
-            <materialDesign:Card HorizontalAlignment="Center" VerticalAlignment="Center" Width="850" Height="530" UniformCornerRadius="15" Background="{DynamicResource MaterialDesignPaper}">
+            <materialDesign:Card HorizontalAlignment="Center" VerticalAlignment="Center" Width="880" MinHeight="550" UniformCornerRadius="15" Background="{DynamicResource MaterialDesignPaper}">
                 <Grid Margin="30">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="350"/>
+                        <ColumnDefinition Width="380"/>
                         <ColumnDefinition Width="20"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
@@ -135,7 +147,7 @@
                             <TextBlock Text="BROADCAST PRINT SETTINGS" FontSize="18" FontWeight="Black" Foreground="#F59E0B" VerticalAlignment="Center" Margin="10,0,0,0"/>
                         </StackPanel>
 
-                        <TextBlock Text="Select Output Printers (Check all that apply):" FontWeight="Bold" Foreground="#64748B" Margin="0,0,0,5"/>
+                        <TextBlock Text="Select Output Printers:" FontWeight="Bold" Foreground="#64748B" Margin="0,0,0,5"/>
                         <Border Background="{DynamicResource MaterialDesignCardBackground}" BorderBrush="#475569" BorderThickness="1" CornerRadius="8" Padding="5" Margin="0,0,0,15" Height="100">
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <ItemsControl x:Name="ListOutputPrinters">
@@ -171,7 +183,43 @@
                             </StackPanel>
                         </Grid>
 
-                        <Grid Margin="0,0,0,20">
+                        <Button x:Name="BtnToggleAdvanced" Style="{StaticResource MaterialDesignFlatButton}" Foreground="#14B8A6" HorizontalAlignment="Left" Margin="-10,0,0,10" Click="BtnToggleAdvanced_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="Settings" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                <TextBlock Text="ADVANCED SETTINGS" FontWeight="Bold"/>
+                            </StackPanel>
+                        </Button>
+
+                        <StackPanel x:Name="AdvancedSection" Visibility="Collapsed" Margin="0,0,0,15">
+                            <Grid Margin="0,0,0,15">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Extra Paper Sizes:" FontWeight="Bold" Foreground="#64748B" Margin="0,0,0,5"/>
+                                    <ComboBox x:Name="CmbPaperSizeAdvanced" Foreground="{DynamicResource MaterialDesignBody}">
+                                        <ComboBoxItem Content="--- Select Extra ---"/>
+                                        <ComboBoxItem Content="Statement (5.5 x 8.5)"/>
+                                        <ComboBoxItem Content="Executive (7.25 x 10.5)"/>
+                                        <ComboBoxItem Content="Folio (8.5 x 13)"/>
+                                        <ComboBoxItem Content="A3 (11.7 x 16.5)"/>
+                                        <ComboBoxItem Content="Envelope #10"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Print Quality:" FontWeight="Bold" Foreground="#64748B" Margin="0,0,0,5"/>
+                                    <ComboBox x:Name="CmbPrintQuality" Foreground="{DynamicResource MaterialDesignBody}">
+                                        <ComboBoxItem Content="Normal" IsSelected="True"/>
+                                        <ComboBoxItem Content="Draft (Eco)"/>
+                                        <ComboBoxItem Content="High (Best)"/>
+                                    </ComboBox>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+
+                        <Grid Margin="0,0,0,15">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="10"/>
@@ -223,7 +271,6 @@
                                 <TextBlock Text="LIVE PREVIEW" FontSize="12" FontWeight="Bold" Foreground="#64748B" HorizontalAlignment="Center"/>
                                 <TextBlock x:Name="TxtPdfPreviewMessage" Text="(Settings won't visually apply to PDF preview)" FontSize="10" FontStyle="Italic" Foreground="#EF4444" Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                             </StackPanel>
-
                             <Border x:Name="PaperPreviewBorder" Background="White" Width="260" Height="360" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,25,0,0" Effect="{DynamicResource MaterialDesignShadowDepth3}">
                                 <Grid>
                                     <Image x:Name="ImgPrintPreview" Stretch="Uniform" Margin="10" Visibility="Collapsed"/>
@@ -244,7 +291,7 @@
                         <TextBlock x:Name="TxtAlertTitle" Text="SYSTEM ALERT" FontSize="20" FontWeight="Black" Foreground="#F59E0B" VerticalAlignment="Center" Margin="10,0,0,0"/>
                     </StackPanel>
                     <TextBlock x:Name="TxtAlertMessage" Text="Alert message here." FontSize="15" TextWrapping="Wrap" Margin="0,0,0,25" Opacity="0.8"/>
-                    <Button Content="OK, GOT IT" Height="45" FontSize="16" FontWeight="Bold" Click="BtnCloseAlert_Click" Cursor="Hand" materialDesign:ButtonAssist.CornerRadius="8" Background="#0D9488" BorderBrush="#0D9488" Foreground="White" HorizontalAlignment="Right" Width="130"/>
+                    <Button Content="OK, GOT IT" Height="45" FontSize="16" FontWeight="Bold" Click="BtnCloseAlert_Click" Background="#0D9488" BorderBrush="#0D9488" Foreground="White" HorizontalAlignment="Right" Width="130"/>
                 </StackPanel>
             </materialDesign:Card>
         </Grid>
@@ -258,6 +305,5 @@
                 <TextBlock x:Name="TxtModalMessage" Text="Scanning document..." FontSize="22" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center"/>
             </StackPanel>
         </Grid>
-
     </Grid>
 </Window>
