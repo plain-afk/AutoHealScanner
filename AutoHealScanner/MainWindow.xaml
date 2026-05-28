@@ -2386,7 +2386,15 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
 
-                            <Button x:Name="BtnSetDefaultPrinter" Content="SET SYSTEM DEFAULT" Height="36" FontSize="11" FontWeight="Black" Click="BtnSetDefaultPrinter_Click" Background="{StaticResource AccentBlue}" BorderBrush="Transparent" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,20"/>
+                            <Grid Margin="0,0,0,20">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button Grid.Column="0" x:Name="BtnSetDefaultPrinter" Content="SET DEFAULT" Height="36" FontSize="11" FontWeight="Black" Click="BtnSetDefaultPrinter_Click" Background="{StaticResource AccentBlue}" BorderBrush="Transparent" Foreground="{DynamicResource TextPrimary}"/>
+                                <Button Grid.Column="2" x:Name="BtnAddWifiPrinter" Content="ADD PRINTER" Height="36" FontSize="11" FontWeight="Black" Click="BtnAddWifiPrinter_Click" Background="{StaticResource AccentGreen}" BorderBrush="Transparent" Foreground="{DynamicResource SidebarBg}"/>
+                            </Grid>
 
                             <Border Style="{StaticResource GlassCard}">
                                 <StackPanel>
@@ -2719,6 +2727,138 @@
                             <Button Grid.Column="2" Content="SAVE CHANGES" Height="40" FontWeight="Bold" Click="BtnSaveProfile_Click" Background="{StaticResource AccentBlue}" BorderBrush="Transparent" Foreground="{DynamicResource TextPrimary}"/>
                         </Grid>
                     </Border>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid x:Name="AddPrinterModal" Visibility="Collapsed" Grid.ColumnSpan="4" Background="{DynamicResource ModalOverlay}" Panel.ZIndex="10">
+            <Border Style="{StaticResource GlassCard}" Width="650" Height="500" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="25" BorderBrush="{DynamicResource InputBorder}" Background="{DynamicResource CardBg}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Header -->
+                    <Grid Grid.Row="0" Margin="0,0,0,15">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="PrinterSearch" Foreground="#10B981" Width="26" Height="26" VerticalAlignment="Center"/>
+                            <TextBlock Text="ADD WI-FI / NETWORK PRINTER" FontSize="16" FontWeight="Black" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Style="{StaticResource MaterialDesignToolButton}" Width="32" Height="32" Padding="0" Click="BtnCloseAddPrinterModal_Click" ToolTip="Close">
+                            <materialDesign:PackIcon Kind="Close" Foreground="{DynamicResource TextMuted}" Width="20" Height="20"/>
+                        </Button>
+                    </Grid>
+
+                    <!-- Search Status & Progress Bar -->
+                    <StackPanel Grid.Row="1" Margin="0,0,0,15">
+                        <Grid>
+                            <TextBlock x:Name="TxtAddPrinterScanStatus" Text="Scanning local Wi-Fi network..." FontSize="12.5" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="TxtAddPrinterProgressPercent" Text="0%" FontSize="12.5" FontWeight="Bold" Foreground="#10B981" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+                        <ProgressBar x:Name="ProgressAddPrinterScan" Height="8" Minimum="0" Maximum="100" Value="0" Foreground="#10B981" Background="{DynamicResource InputBg}" Margin="0,6,0,0"/>
+                    </StackPanel>
+
+                    <!-- Discovered Printers List -->
+                    <Border Grid.Row="2" Background="{DynamicResource DeepestBg}" BorderBrush="{DynamicResource InputBg}" BorderThickness="1" CornerRadius="8" Padding="5" Margin="0,0,0,15">
+                        <Grid>
+                            <!-- Empty State -->
+                            <StackPanel x:Name="PanelAddPrinterEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="20">
+                                <materialDesign:PackIcon Kind="WifiOff" Width="48" Height="48" Foreground="{DynamicResource TextDim}" HorizontalAlignment="Center" Margin="0,0,0,10"/>
+                                <TextBlock Text="No Wi-Fi printers discovered yet" FontSize="13" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" HorizontalAlignment="Center"/>
+                                <TextBlock Text="Scanning IP addresses in your local subnet..." FontSize="11" Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                            </StackPanel>
+
+                            <!-- ListBox of Discovered Printers -->
+                            <ListBox x:Name="ListDiscoveredPrinters" Background="Transparent" BorderThickness="0" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="BorderThickness" Value="0"/>
+                                        <Setter Property="Padding" Value="0"/>
+                                        <Setter Property="Margin" Value="0,0,6,6"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border CornerRadius="8" Background="{TemplateBinding Background}" Padding="10,8" BorderThickness="1" BorderBrush="{DynamicResource BorderLine}">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="true">
+                                                <Setter Property="Background" Value="{DynamicResource NavActiveBg}"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <!-- Printer Icon -->
+                                            <Border Grid.Column="0" Background="{DynamicResource NavActiveBg}" CornerRadius="6" Padding="8" Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <materialDesign:PackIcon Kind="Printer" Foreground="#10B981" Width="20" Height="20"/>
+                                            </Border>
+
+                                            <!-- Details -->
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Name}" FontSize="12.5" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis" MaxWidth="320"/>
+                                                <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                                                    <TextBlock Text="{Binding IpAddress}" FontSize="10.5" Foreground="{DynamicResource TextMuted}"/>
+                                                    <TextBlock Text=" • " FontSize="10.5" Foreground="{DynamicResource TextDim}"/>
+                                                    <TextBlock Text="{Binding Protocol}" FontSize="10.5" Foreground="#06B6D4" FontWeight="SemiBold"/>
+                                                </StackPanel>
+                                            </StackPanel>
+
+                                            <!-- Action Button -->
+                                            <Grid Grid.Column="2" VerticalAlignment="Center" Margin="10,0,0,0">
+                                                <Button Content="INSTALL" Height="30" Padding="15,0" Click="BtnInstallDiscoveredPrinter_Click" Background="{StaticResource AccentBlue}" BorderBrush="Transparent" Foreground="{DynamicResource TextPrimary}" FontSize="10" FontWeight="Bold">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsInstalling}" Value="True">
+                                                                    <Setter Property="IsEnabled" Value="False"/>
+                                                                    <Setter Property="Content" Value="INSTALLING..."/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                </Button>
+                                            </Grid>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+
+                    <!-- Diagnostic/Log message -->
+                    <TextBlock Grid.Row="3" x:Name="TxtAddPrinterLog" Text="" FontSize="11" Foreground="{DynamicResource ConsoleFg}" FontFamily="Consolas, monospace" TextWrapping="Wrap" Margin="0,0,0,15" MaxHeight="40" VerticalAlignment="Center"/>
+
+                    <!-- Footer Actions -->
+                    <Grid Grid.Row="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Content="NATIVE WIZARD" Height="40" Click="BtnLaunchWindowsWizard_Click" Background="Transparent" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1.5" Foreground="{DynamicResource TextMuted}" FontSize="11" FontWeight="Bold" ToolTip="Launch native Windows Add Printer wizard for Wi-Fi/Bluetooth/WSD discovery"/>
+                        <Button Grid.Column="2" Content="RESCAN NETWORK" x:Name="BtnRescanNetwork" Height="40" Click="BtnRescanNetwork_Click" Background="{StaticResource AccentBlue}" BorderBrush="Transparent" Foreground="{DynamicResource TextPrimary}" FontSize="11" FontWeight="Bold"/>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>

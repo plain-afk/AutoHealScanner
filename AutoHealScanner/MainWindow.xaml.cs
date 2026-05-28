@@ -68,6 +68,11 @@ namespace AutoHealScanner
         // PRINTER CENTER PROPERTIES
         public ObservableCollection<PrintJobItem> CurrentPrinterJobs { get; set; } = new ObservableCollection<PrintJobItem>();
 
+        // DISCOVERED WIFI PRINTERS
+        public ObservableCollection<DiscoveredPrinter> DiscoveredPrinters { get; set; } = new ObservableCollection<DiscoveredPrinter>();
+        private System.Threading.CancellationTokenSource? _scanCancellationTokenSource;
+        private bool _isScanningPrinters = false;
+
         // THEME ENGINE PROPERTIES
         private bool _isDarkMode = true;
         
@@ -156,6 +161,7 @@ namespace AutoHealScanner
             // I-bind ang listahan para sa Printer Center
             ListPrinterCenterDevices.ItemsSource = TargetPrinters;
             GridPrinterCenterJobs.ItemsSource = CurrentPrinterJobs;
+            ListDiscoveredPrinters.ItemsSource = DiscoveredPrinters;
 
             CmbPaperSize.SelectedIndex = 0;
             CmbOrientation.SelectedIndex = 0;
@@ -3091,14 +3097,63 @@ namespace AutoHealScanner
                 
                 try
                 {
+                    // 1. Try Registry first (fastest and most accurate for HKCU default printer)
+                    string? defaultDevice = Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Windows", "Device", null) as string;
+                    if (!string.IsNullOrEmpty(defaultDevice))
+                    {
+                        string[] parts = defaultDevice.Split(',');
+                        if (parts.Length > 0 && !string.IsNullOrEmpty(parts[0]))
+                        {
+                            defaultPrinterName = parts[0];
+                        }
+                    }
+                }
+                catch { }
+
+                if (string.IsNullOrEmpty(defaultPrinterName) || defaultPrinterName == "No Default Printer")
+                {
+                    try
+                    {
+                        // 2. Try PrinterSettings fallback
+                        defaultPrinterName = new System.Drawing.Printing.PrinterSettings().PrinterName;
+                    }
+                    catch { }
+                }
+
+                try
+                {
                     LocalPrintServer printServer = new LocalPrintServer();
                     printersCount = printServer.GetPrintQueues().Count();
                     
-                    var defaultQueue = printServer.DefaultPrintQueue;
-                    if (defaultQueue != null)
+                    if (!string.IsNullOrEmpty(defaultPrinterName) && defaultPrinterName != "No Default Printer")
                     {
-                        defaultPrinterName = defaultQueue.FullName;
-                        defaultPrinterJobCount = defaultQueue.NumberOfJobs;
+                        try
+                        {
+                            var defaultQueue = printServer.GetPrintQueue(defaultPrinterName);
+                            if (defaultQueue != null)
+                            {
+                                defaultPrinterJobCount = defaultQueue.NumberOfJobs;
+                            }
+                        }
+                        catch
+                        {
+                            // Fallback if specific print queue query fails
+                            var defaultQueue = printServer.DefaultPrintQueue;
+                            if (defaultQueue != null)
+                            {
+                                defaultPrinterName = defaultQueue.FullName;
+                                defaultPrinterJobCount = defaultQueue.NumberOfJobs;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var defaultQueue = printServer.DefaultPrintQueue;
+                        if (defaultQueue != null)
+                        {
+                            defaultPrinterName = defaultQueue.FullName;
+                            defaultPrinterJobCount = defaultQueue.NumberOfJobs;
+                        }
                     }
                 }
                 catch { }
@@ -4293,6 +4348,7 @@ namespace AutoHealScanner
                     dynamic network = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Network")!)!;
                     network.SetDefaultPrinter(selectedPrinter.Name);
                     LogPrinterHealConsole($"SUCCESS: Set default printer to {selectedPrinter.Name}");
+                    UpdateDashboardData(); // Update dashboard telemetry immediately!
                     ShowHardwareAlert("Default Printer Set", $"Naka-set na bilang default printer ang: {selectedPrinter.Name}");
                 }
                 catch (Exception ex)
@@ -4432,6 +4488,564 @@ namespace AutoHealScanner
                 }
             });
         }
+
+        // ==========================================
+        // WIFI / NETWORK PRINTER DISCOVERY & INSTALL
+        // ==========================================
+        private void BtnAddWifiPrinter_Click(object sender, RoutedEventArgs e)
+        {
+            AddPrinterModal.Visibility = Visibility.Visible;
+            if (_wasPdfViewerVisible == false)
+            {
+                _wasPdfViewerVisible = PdfViewer.Visibility == Visibility.Visible;
+            }
+            PdfViewer.Visibility = Visibility.Collapsed; // Hide to avoid rendering issues under modal
+            StartWifiPrinterScan();
+        }
+
+        private void BtnCloseAddPrinterModal_Click(object sender, RoutedEventArgs e)
+        {
+            CancelWifiPrinterScan();
+            AddPrinterModal.Visibility = Visibility.Collapsed;
+            if (_wasPdfViewerVisible)
+            {
+                PdfViewer.Visibility = Visibility.Visible;
+                _wasPdfViewerVisible = false;
+            }
+        }
+
+        private void BtnRescanNetwork_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_isScanningPrinters)
+            {
+                StartWifiPrinterScan();
+            }
+        }
+
+        private void CancelWifiPrinterScan()
+        {
+            if (_scanCancellationTokenSource != null)
+            {
+                _scanCancellationTokenSource.Cancel();
+                _scanCancellationTokenSource.Dispose();
+                _scanCancellationTokenSource = null;
+            }
+            _isScanningPrinters = false;
+            ProgressAddPrinterScan.Value = 0;
+            TxtAddPrinterProgressPercent.Text = "0%";
+            TxtAddPrinterScanStatus.Text = "Scan cancelled.";
+            BtnRescanNetwork.IsEnabled = true;
+        }
+
+        private async void StartWifiPrinterScan()
+        {
+            CancelWifiPrinterScan();
+
+            _isScanningPrinters = true;
+            BtnRescanNetwork.IsEnabled = false;
+            DiscoveredPrinters.Clear();
+            PanelAddPrinterEmpty.Visibility = Visibility.Visible;
+            TxtAddPrinterScanStatus.Text = "Retrieving local network subnet...";
+            ProgressAddPrinterScan.Value = 0;
+            TxtAddPrinterProgressPercent.Text = "0%";
+            TxtAddPrinterLog.Text = "";
+
+            _scanCancellationTokenSource = new System.Threading.CancellationTokenSource();
+            var token = _scanCancellationTokenSource.Token;
+
+            try
+            {
+                await Task.Run(async () =>
+                {
+                    List<string> subnets = new List<string>();
+                    try
+                    {
+                        var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
+                        foreach (var ip in host.AddressList)
+                        {
+                            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                            {
+                                string ipStr = ip.ToString();
+                                if (ipStr.StartsWith("127.")) continue;
+                                int lastDot = ipStr.LastIndexOf('.');
+                                if (lastDot > 0)
+                                {
+                                    subnets.Add(ipStr.Substring(0, lastDot + 1));
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.Invoke(() => TxtAddPrinterScanStatus.Text = $"Error getting subnet: {ex.Message}");
+                    }
+
+                    if (subnets.Count == 0)
+                    {
+                        // Fallback default home/office subnets if DNS fails to yield one
+                        subnets.Add("192.168.1.");
+                        subnets.Add("192.168.0.");
+                        subnets.Add("192.168.254.");
+                    }
+
+                    // Scan ports 9100 and 631 on all discovered subnets
+                    int totalIps = subnets.Count * 254;
+                    int scannedCount = 0;
+                    
+                    Dispatcher.Invoke(() => TxtAddPrinterScanStatus.Text = $"Scanning {subnets.Count} local subnet(s) for printers...");
+
+                    using (var semaphore = new System.Threading.SemaphoreSlim(50))
+                    {
+                        var tasks = new List<Task>();
+                        
+                        foreach (var baseSubnet in subnets)
+                        {
+                            for (int i = 1; i <= 254; i++)
+                            {
+                                if (token.IsCancellationRequested) break;
+
+                                string ip = $"{baseSubnet}{i}";
+                                tasks.Add(Task.Run(async () =>
+                                {
+                                    await semaphore.WaitAsync();
+                                    try
+                                    {
+                                        if (token.IsCancellationRequested) return;
+
+                                        // Update logs occasionally
+                                        if (i % 25 == 0)
+                                        {
+                                            Dispatcher.Invoke(() => TxtAddPrinterLog.Text = $"Checking: {ip}...");
+                                        }
+
+                                        // Try common printer ports
+                                        bool isPort9100Open = await CheckPortAsync(ip, 9100, 1000, token);
+                                        bool isPort631Open = false;
+
+                                        if (!isPort9100Open)
+                                        {
+                                            isPort631Open = await CheckPortAsync(ip, 631, 1000, token);
+                                        }
+
+                                        if (isPort9100Open || isPort631Open)
+                                        {
+                                            string protocolName = isPort9100Open ? "JetDirect (Port 9100)" : "IPP (Port 631)";
+                                            string printerName = "";
+
+                                            // 1. Try PJL first if port 9100 is open (fastest and most accurate)
+                                            if (isPort9100Open)
+                                            {
+                                                printerName = await QueryPrinterModelViaPjlAsync(ip, 800, token) ?? "";
+                                            }
+
+                                            // 2. Try reverse DNS next
+                                            if (string.IsNullOrEmpty(printerName))
+                                            {
+                                                try
+                                                {
+                                                    var resolveTask = System.Net.Dns.GetHostEntryAsync(ip);
+                                                    var delayTask = Task.Delay(600);
+                                                    var completed = await Task.WhenAny(resolveTask, delayTask);
+                                                    if (completed == resolveTask)
+                                                    {
+                                                        var entry = await resolveTask;
+                                                        if (!string.IsNullOrEmpty(entry.HostName) && !entry.HostName.Equals(ip))
+                                                        {
+                                                            printerName = entry.HostName;
+                                                            // Clean local domain suffixes
+                                                            if (printerName.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+                                                                printerName = printerName.Substring(0, printerName.Length - 6);
+                                                            if (printerName.EndsWith(".home", StringComparison.OrdinalIgnoreCase))
+                                                                printerName = printerName.Substring(0, printerName.Length - 5);
+                                                        }
+                                                    }
+                                                }
+                                                catch { }
+                                            }
+
+                                            // 3. Fallback to querying web configuration page and XML descriptors
+                                            if (string.IsNullOrEmpty(printerName) || 
+                                                printerName.Equals("Network Printer", StringComparison.OrdinalIgnoreCase) || 
+                                                printerName.Equals("Unknown Network Printer", StringComparison.OrdinalIgnoreCase) ||
+                                                System.Net.IPAddress.TryParse(printerName, out _))
+                                            {
+                                                string webName = await GetPrinterModelFromWebPageAsync(ip);
+                                                if (!string.IsNullOrEmpty(webName) && !webName.Equals("Network Printer", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    printerName = webName;
+                                                }
+                                            }
+
+                                            // 4. Last resort fallback containing IP address
+                                            if (string.IsNullOrEmpty(printerName) || printerName.Equals("Network Printer", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                printerName = $"Unknown Network Printer ({ip})";
+                                            }
+
+                                            Dispatcher.Invoke(() =>
+                                            {
+                                                var printer = new DiscoveredPrinter
+                                                {
+                                                    IpAddress = ip,
+                                                    Name = printerName,
+                                                    Protocol = protocolName,
+                                                    InstallStatus = "Discovered"
+                                                };
+                                                DiscoveredPrinters.Add(printer);
+                                                PanelAddPrinterEmpty.Visibility = Visibility.Collapsed;
+                                                LogEvent($"Discovered network printer: {printerName} at {ip} ({protocolName})");
+                                            });
+                                        }
+                                    }
+                                    finally
+                                    {
+                                        semaphore.Release();
+                                        System.Threading.Interlocked.Increment(ref scannedCount);
+                                        int progress = (int)((double)scannedCount / totalIps * 100);
+                                        Dispatcher.Invoke(() =>
+                                        {
+                                            ProgressAddPrinterScan.Value = progress;
+                                            TxtAddPrinterProgressPercent.Text = $"{progress}%";
+                                        });
+                                    }
+                                }, token));
+                            }
+                        }
+
+                        await Task.WhenAll(tasks);
+                    }
+                }, token);
+
+                TxtAddPrinterScanStatus.Text = "Scanning completed.";
+                TxtAddPrinterLog.Text = $"Discovered {DiscoveredPrinters.Count} printer(s) on local subnet.";
+            }
+            catch (OperationCanceledException)
+            {
+                TxtAddPrinterScanStatus.Text = "Scan cancelled.";
+            }
+            catch (Exception ex)
+            {
+                TxtAddPrinterScanStatus.Text = "Scan interrupted.";
+                TxtAddPrinterLog.Text = $"Error during scan: {ex.Message}";
+            }
+            finally
+            {
+                _isScanningPrinters = false;
+                BtnRescanNetwork.IsEnabled = true;
+            }
+        }
+
+        private async Task<bool> CheckPortAsync(string ip, int port, int timeoutMs, System.Threading.CancellationToken token)
+        {
+            try
+            {
+                using (var client = new System.Net.Sockets.TcpClient())
+                {
+                    var connectTask = client.ConnectAsync(ip, port);
+                    var delayTask = Task.Delay(timeoutMs, token);
+                    var completedTask = await Task.WhenAny(connectTask, delayTask);
+                    if (completedTask == connectTask)
+                    {
+                        await connectTask; // Throws if connection failed
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private async Task<string?> QueryPrinterModelViaPjlAsync(string ip, int timeoutMs, System.Threading.CancellationToken token)
+        {
+            try
+            {
+                using (var client = new System.Net.Sockets.TcpClient())
+                {
+                    var connectTask = client.ConnectAsync(ip, 9100);
+                    var delayTask = Task.Delay(timeoutMs, token);
+                    var completedTask = await Task.WhenAny(connectTask, delayTask);
+                    if (completedTask == connectTask)
+                    {
+                        await connectTask; // Complete connection
+                        using (var stream = client.GetStream())
+                        {
+                            // Send PJL Info ID query (Universal printer model identification command)
+                            byte[] query = System.Text.Encoding.ASCII.GetBytes("\x1B%-12345X@PJL INFO ID\r\n\x1B%-12345X\r\n");
+                            await stream.WriteAsync(query, 0, query.Length, token);
+                            
+                            byte[] buffer = new byte[1024];
+                            var readTask = stream.ReadAsync(buffer, 0, buffer.Length, token);
+                            var readDelay = Task.Delay(timeoutMs, token);
+                            if (await Task.WhenAny(readTask, readDelay) == readTask)
+                            {
+                                int read = await readTask;
+                                if (read > 0)
+                                {
+                                    string response = System.Text.Encoding.ASCII.GetString(buffer, 0, read);
+                                    
+                                    // Try to extract double-quoted string (e.g., "Epson L565 Series")
+                                    var match = System.Text.RegularExpressions.Regex.Match(response, "\"([^\"]+)\"");
+                                    if (match.Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                                    {
+                                        string modelName = match.Groups[1].Value.Trim();
+                                        if (modelName.Length > 2) return modelName;
+                                    }
+                                    
+                                    // Fallback: search for lines without PJL keywords
+                                    string[] lines = response.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                                    foreach (var line in lines)
+                                    {
+                                        if (!line.Contains("@PJL") && !string.IsNullOrWhiteSpace(line))
+                                        {
+                                            string trimmed = line.Trim().Replace("\"", "");
+                                            if (trimmed.Length > 2) return trimmed;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private async Task<string> GetPrinterModelFromWebPageAsync(string ip)
+        {
+            int[] ports = new int[] { 80, 443, 631, 8080 };
+            var handler = new System.Net.Http.HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+            };
+
+            using (var client = new System.Net.Http.HttpClient(handler))
+            {
+                client.Timeout = TimeSpan.FromMilliseconds(1200);
+
+                foreach (int port in ports)
+                {
+                    // Query common descriptor sub-paths in addition to root endpoint
+                    string[] paths = port == 80 || port == 443 ? 
+                        new string[] { "", "DevMgmt/ProductInfo.xml", "upnp/presentation/printer.xml", "dd.xml", "description.xml" } : 
+                        new string[] { "" };
+
+                    foreach (var path in paths)
+                    {
+                        try
+                        {
+                            string scheme = port == 443 ? "https" : "http";
+                            string url = string.IsNullOrEmpty(path) ? $"{scheme}://{ip}:{port}/" : $"{scheme}://{ip}:{port}/{path}";
+                            
+                            var response = await client.GetAsync(url);
+                            if (response.IsSuccessStatusCode)
+                            {
+                                string content = await response.Content.ReadAsStringAsync();
+                                
+                                // A. If response appears to be XML, parse printer descriptor tags
+                                if (content.Trim().StartsWith("<"))
+                                {
+                                    var xmlMatches = new[] {
+                                        System.Text.RegularExpressions.Regex.Match(content, @"<modelName>([^<]+)</modelName>", System.Text.RegularExpressions.RegexOptions.IgnoreCase),
+                                        System.Text.RegularExpressions.Regex.Match(content, @"<friendlyName>([^<]+)</friendlyName>", System.Text.RegularExpressions.RegexOptions.IgnoreCase),
+                                        System.Text.RegularExpressions.Regex.Match(content, @"<dd:ModelName>([^<]+)</dd:ModelName>", System.Text.RegularExpressions.RegexOptions.IgnoreCase),
+                                        System.Text.RegularExpressions.Regex.Match(content, @"<ProductName>([^<]+)</ProductName>", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                                    };
+                                    
+                                    foreach (var m in xmlMatches)
+                                    {
+                                        if (m.Success && !string.IsNullOrWhiteSpace(m.Groups[1].Value))
+                                        {
+                                            string name = System.Net.WebUtility.HtmlDecode(m.Groups[1].Value.Trim());
+                                            if (name.Length > 2) return name;
+                                        }
+                                    }
+                                }
+
+                                // B. Try parsing HTML title
+                                var match = System.Text.RegularExpressions.Regex.Match(
+                                    content, 
+                                    @"<title>(.*?)</title>", 
+                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline
+                                );
+                                
+                                if (match.Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                                {
+                                    string title = match.Groups[1].Value.Trim();
+                                    title = System.Net.WebUtility.HtmlDecode(title);
+                                    
+                                    if (!title.Equals("document", StringComparison.OrdinalIgnoreCase) && 
+                                        !title.Equals("index", StringComparison.OrdinalIgnoreCase) &&
+                                        !title.Equals("home", StringComparison.OrdinalIgnoreCase) &&
+                                        !title.Equals("welcome", StringComparison.OrdinalIgnoreCase) &&
+                                        !title.Equals("untitled", StringComparison.OrdinalIgnoreCase) &&
+                                        title.Length > 2)
+                                    {
+                                        return title;
+                                    }
+                                }
+                                
+                                // C. Scan for brands and common model number patterns in body text
+                                string[] brands = { "Epson", "Brother", "HP", "Hewlett-Packard", "Canon", "Lexmark", "Xerox", "Samsung", "Ricoh", "Kyocera", "Konica Minolta", "Sharp", "Panasonic" };
+                                foreach (var brand in brands)
+                                {
+                                    int index = content.IndexOf(brand, StringComparison.OrdinalIgnoreCase);
+                                    if (index >= 0)
+                                    {
+                                        // Attempt to search for model code (e.g. L565 or MFC-9100) nearby
+                                        string substring = content.Substring(index, Math.Min(60, content.Length - index));
+                                        var modelMatch = System.Text.RegularExpressions.Regex.Match(substring, @"[A-Za-z]*[-–—]?\d{3,4}[A-Za-z]*");
+                                        if (modelMatch.Success)
+                                        {
+                                            return $"{brand} {modelMatch.Value} Network Printer";
+                                        }
+                                        return $"{brand} Network Printer";
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            return "Network Printer";
+        }
+
+        private async void BtnInstallDiscoveredPrinter_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as Button;
+            if (button == null) return;
+
+            var discoveredPrinter = button.DataContext as DiscoveredPrinter;
+            if (discoveredPrinter == null) return;
+
+            discoveredPrinter.IsInstalling = true;
+            discoveredPrinter.InstallStatus = "Installing...";
+            TxtAddPrinterLog.Text = $"Installing printer {discoveredPrinter.Name} ({discoveredPrinter.IpAddress})...";
+
+            var result = await InstallNetworkPrinterAsync(discoveredPrinter.IpAddress, discoveredPrinter.Name, discoveredPrinter.Protocol);
+
+            discoveredPrinter.IsInstalling = false;
+            if (result.success)
+            {
+                discoveredPrinter.InstallStatus = "Installed";
+                TxtAddPrinterLog.Text = $"SUCCESS: Installed {discoveredPrinter.Name} on {discoveredPrinter.IpAddress}";
+                LogEvent($"Installed network printer: {discoveredPrinter.Name} ({discoveredPrinter.IpAddress})");
+                RefreshPrinterCenterList();
+                ShowHardwareAlert("Printer Installed", $"Matagumpay na na-install ang {discoveredPrinter.Name} sa iyong system!");
+            }
+            else
+            {
+                discoveredPrinter.InstallStatus = "Failed";
+                TxtAddPrinterLog.Text = $"FAILED: {result.error}";
+                
+                // Prompt with option to use Windows Setup Wizard since PowerShell port/printer creation requires admin elevation
+                MessageBoxResult userChoice = MessageBox.Show(
+                    $"Hindi ma-install ang printer gamit ang automated installer.\n\nError: {result.error}\n\nGusto mo bang buksan ang standard Windows Add Printer Wizard para i-install ito nang manu-mano?",
+                    "Printer Installation Failed",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning
+                );
+
+                if (userChoice == MessageBoxResult.Yes)
+                {
+                    LaunchWindowsAddPrinterWizard();
+                }
+            }
+        }
+
+        private async Task<(bool success, string error)> InstallNetworkPrinterAsync(string ip, string name, string protocol)
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    string portName = $"IP_{ip}";
+                    // Clean illegal characters for Windows printer names
+                    string cleanName = name.Replace("\\", "").Replace("/", "").Replace(":", "").Replace("*", "").Replace("?", "").Replace("\"", "").Replace("<", "").Replace(">", "").Replace("|", "").Trim();
+                    string printerName = $"{cleanName} (on {ip})";
+                    string driverName = protocol.Contains("631") ? "Microsoft IPP Class Driver" : "Generic / Text Only";
+
+                    // Prepare PowerShell script to add port and printer
+                    string script = $@"
+                        $portName = '{portName}'
+                        $ip = '{ip}'
+                        $printerName = '{printerName}'
+                        $driverName = '{driverName}'
+                        
+                        try {{
+                            $checkPort = Get-PrinterPort -Name $portName -ErrorAction SilentlyContinue
+                            if (-not $checkPort) {{
+                                Add-PrinterPort -Name $portName -PrinterHostAddress $ip -ErrorAction Stop
+                            }}
+                            
+                            try {{
+                                Add-Printer -Name $printerName -PortName $portName -DriverName $driverName -ErrorAction Stop
+                            }} catch {{
+                                # Fallback driver if driver is not present
+                                Add-Printer -Name $printerName -PortName $portName -DriverName 'Generic / Text Only' -ErrorAction Stop
+                            }}
+                            Write-Output 'SUCCESS'
+                        }} catch {{
+                            Write-Error $_.Exception.Message
+                        }}
+                    ";
+
+                    ProcessStartInfo psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{script}\"",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using (Process p = Process.Start(psi)!)
+                    {
+                        string output = p.StandardOutput.ReadToEnd();
+                        string error = p.StandardError.ReadToEnd();
+                        p.WaitForExit();
+
+                        if (p.ExitCode == 0 && output.Contains("SUCCESS"))
+                        {
+                            return (true, "");
+                        }
+                        else
+                        {
+                            string errDetails = string.IsNullOrEmpty(error) ? output : error;
+                            if (errDetails.Contains("Access is denied") || errDetails.Contains("admin"))
+                            {
+                                errDetails = "Access Denied (Requires Administrator Elevation)";
+                            }
+                            return (false, errDetails.Trim());
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return (false, ex.Message);
+                }
+            });
+        }
+
+        private void BtnLaunchWindowsWizard_Click(object sender, RoutedEventArgs e)
+        {
+            LaunchWindowsAddPrinterWizard();
+        }
+
+        private void LaunchWindowsAddPrinterWizard()
+        {
+            try
+            {
+                LogEvent("Launching Windows Native Printer Installation Wizard...");
+                Process.Start("rundll32.exe", "printui.dll,PrintUIEntry /il");
+            }
+            catch (Exception ex)
+            {
+                ShowHardwareAlert("Wizard Error", $"Failed to launch wizard: {ex.Message}");
+            }
+        }
     }
 
     // ==========================================
@@ -4503,5 +5117,26 @@ namespace AutoHealScanner
         public int PageIndex { get; set; }
         public string PageLabel => $"Page {PageIndex + 1}";
         public ImageSource? Thumbnail { get; set; }
+    }
+
+    public class DiscoveredPrinter : System.ComponentModel.INotifyPropertyChanged
+    {
+        private string _ipAddress = "";
+        private string _name = "";
+        private string _protocol = "";
+        private bool _isInstalling = false;
+        private string _installStatus = "Not Installed";
+
+        public string IpAddress { get { return _ipAddress; } set { _ipAddress = value; OnPropertyChanged("IpAddress"); } }
+        public string Name { get { return _name; } set { _name = value; OnPropertyChanged("Name"); } }
+        public string Protocol { get { return _protocol; } set { _protocol = value; OnPropertyChanged("Protocol"); } }
+        public bool IsInstalling { get { return _isInstalling; } set { _isInstalling = value; OnPropertyChanged("IsInstalling"); } }
+        public string InstallStatus { get { return _installStatus; } set { _installStatus = value; OnPropertyChanged("InstallStatus"); } }
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged(string name)
+        {
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
+        }
     }
 }
